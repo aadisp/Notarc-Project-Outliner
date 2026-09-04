@@ -416,24 +416,33 @@
 (function () {
   "use strict";
 
+  /* This note is baked into the page so it always opens straight to it.
+     Use "Load a different file" in the top bar to view something else instead. */
+  const EMBEDDED_NOTE_NAME = "Mobile Barricade.md";
+  const EMBEDDED_NOTE = "Initial:\n\tNormal Condition\nMotion (6-9Km/hr):\n\tBarricade Mode\nAbove 9 Km/Hr:\n\tKey Points:\n\t\tA - Near the bottom\n\t\tB - Top left corner\n\t\tC - Top right corner\n\t\tPower Switch\n\tTwo Hand Authentication:\n\t\tPress A and Power Switch Simultaneously\n\tProceed Further:\n\t\tAny Combination of A,B,C\n\t\tExample: A+B or B+C or C+A , etc.\n\tMake Call / Take Call:\n\t\tPress any two mode marks from (A, B, and C)\n\tKeep Screen Active:(Wake Up Action)\n\t\tWhile one finger on one of the three mode marks (A, B, or C), operate the mobile with another hand:\n\t\t\tIf in call(the moment when the phone touches the ear and the screen goes black):\n\t\t\t\tOperate without position change until call ends\n\t\t\tElse:\n\t\t\t\tKeep interacting with the screen every 3 to 5 seconds\n\tIf mobile is not interacted with every 3 to 5 seconds:\n\t\tFriction:(Wake Up Action required to activate the screen)\n\tProlonged continuous interaction with the mobile:(Passenger Recognition)\n\t\tPassenger Mode:\n\t\t\tFriction reduces:\n\t\t\t\tMobile can be left without interacting for more than 3 to 5 seconds\n\t\t\tPeriodic Checks at random intervals to stay in passenger mode:\n\t\t\t\tPuzzle solving, Flash Cards, etc.\n\tPosition Change Trigger:\n\t\tIf mobile position changes while on call (without speaker or Bluetooth), Wake Up Action triggered\n";
+
   /* ============================================================
-     1. MARKDOWN → OUTLINE-TREE PARSER
-     Handles the structures that make up a typical Obsidian note:
-     headings, nested bullet / numbered lists, callouts (incl.
-     foldable "> [!note]-" callouts), fenced code, and paragraphs.
+     1. MARKDOWN / OUTLINE → TREE PARSER
+     Handles two things people export from Obsidian:
+     (a) standard markdown — headings, "- " / "1. " lists, callouts,
+         fenced code, paragraphs
+     (b) plain indentation outlines — lines with no bullet at all,
+         where indentation alone (tabs or spaces) is what nests and
+         folds them, exactly like Obsidian's own fold arrows do for
+         any indented line, not just list items.
   ============================================================ */
 
   function parseMarkdown(source) {
     const lines = source.replace(/\r\n?/g, "\n").split("\n");
     const root = { type: "root", children: [] };
     const headingStack = [{ level: 0, node: root }];
-    let listStack = []; // { indent, node }
+    let itemStack = []; // { indent, node } — any indented line (list item or plain)
 
     function insertAtIndent(indent, node) {
-      while (listStack.length && listStack[listStack.length - 1].indent >= indent) {
-        listStack.pop();
+      while (itemStack.length && itemStack[itemStack.length - 1].indent >= indent) {
+        itemStack.pop();
       }
-      if (listStack.length) listStack[listStack.length - 1].node.children.push(node);
+      if (itemStack.length) itemStack[itemStack.length - 1].node.children.push(node);
       else headingStack[headingStack.length - 1].node.children.push(node);
     }
 
@@ -459,7 +468,7 @@
       // heading
       m = raw.match(/^(#{1,6})\s+(.*)$/);
       if (m) {
-        listStack = [];
+        itemStack = [];
         const level = m[1].length;
         const text = m[2].replace(/\s+#+\s*$/, "").trim();
         while (headingStack.length > 1 && headingStack[headingStack.length - 1].level >= level) headingStack.pop();
@@ -495,44 +504,26 @@
         continue;
       }
 
-      // list item
+      // list item: "- ", "* ", "+ ", "1. "
       m = raw.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
       if (m) {
         const indent = m[1].length;
         const ordered = /\d/.test(m[2]);
         const text = m[3];
-        const node = { type: "listitem", ordered, text, children: [] };
+        const node = { type: "item", marker: ordered ? "ordered" : "bullet", text, children: [] };
         insertAtIndent(indent, node);
-        listStack.push({ indent: indent, node });
+        itemStack.push({ indent, node });
         i++;
         continue;
       }
 
-      // lazy continuation line under an open list item (indented, no marker)
-      const indentMatch = raw.match(/^(\s+)\S/);
-      if (indentMatch && listStack.length) {
-        const indent = indentMatch[1].length;
-        const top = listStack[listStack.length - 1];
-        if (indent > top.indent) {
-          top.node.text += " " + raw.trim();
-          i++;
-          continue;
-        }
-      }
-
-      // plain paragraph — gather consecutive plain lines
-      const paraLines = [raw.trim()];
-      const paraIndent = (raw.match(/^(\s*)/) || ["", ""])[1].length;
+      // plain indented line — no bullet, but indentation alone still nests
+      // and folds it, matching Obsidian's own behavior for any indented line.
+      const indent = (raw.match(/^(\s*)/) || ["", ""])[1].length;
+      const node = { type: "item", marker: "none", text: raw.trim(), children: [] };
+      insertAtIndent(indent, node);
+      itemStack.push({ indent, node });
       i++;
-      while (
-        i < lines.length &&
-        lines[i].trim() !== "" &&
-        !/^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|```|>\s?\[!)/.test(lines[i])
-      ) {
-        paraLines.push(lines[i].trim());
-        i++;
-      }
-      insertAtIndent(paraIndent, { type: "paragraph", text: paraLines.join(" ") });
     }
 
     return root;
@@ -583,13 +574,13 @@
     let i = 0;
     while (i < children.length) {
       const node = children[i];
-      if (node.type === "listitem") {
-        const ordered = node.ordered;
-        const tag = ordered ? "ol" : "ul";
+      if (node.type === "item") {
+        const marker = node.marker;
+        const tag = marker === "ordered" ? "ol" : "ul";
         let items = "";
         let n = 1;
-        while (i < children.length && children[i].type === "listitem") {
-          items += renderListItem(children[i], ordered ? n : null);
+        while (i < children.length && children[i].type === "item" && children[i].marker === marker) {
+          items += renderItem(children[i], marker === "ordered" ? n : null);
           n++;
           i++;
         }
@@ -602,16 +593,17 @@
     return html;
   }
 
-  function renderListItem(node, number) {
+  function renderItem(node, number) {
     const id = nextId();
     const foldable = hasFoldableContent(node.children);
     const arrow = foldable
       ? `<span class="arrow">${arrowSvg()}</span>`
       : `<span class="arrow spacer">${arrowSvg()}</span>`;
     const rowClass = "fold-row li-row" + (foldable ? "" : " no-toggle");
-    const marker = number != null
-      ? `<span class="li-num">${number}.</span>`
-      : `<span class="bullet">•</span>`;
+    let marker = "";
+    if (number != null) marker = `<span class="li-num">${number}.</span>`;
+    else if (node.marker === "bullet") marker = `<span class="bullet">•</span>`;
+    // marker === "none" -> plain indented line, no visual bullet at all
     const childrenHtml = foldable
       ? `<div class="li-children"><div class="li-children-inner">${renderChildren(node.children)}</div></div>`
       : "";
@@ -651,8 +643,6 @@
             ${childrenHtml}
           </section>`;
       }
-      case "paragraph":
-        return `<p class="text-block">${renderInline(node.text)}</p>`;
       case "code":
         return `<pre class="code-block"><code>${escapeHtml(node.text)}</code></pre>`;
       case "callout": {
@@ -773,6 +763,9 @@
     fileInput.value = "";
     filenameLabel.textContent = "";
   });
+
+  // Always open straight to the embedded note.
+  renderDocument(EMBEDDED_NOTE, EMBEDDED_NOTE_NAME);
 
   const moonIcon = `<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>`;
   const sunIcon = `<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>`;
